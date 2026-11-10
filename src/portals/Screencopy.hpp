@@ -164,6 +164,13 @@ class CPipewireConnection {
         bool                                  dmaBufFailed  = false;
 
         std::vector<std::unique_ptr<SBuffer>> buffers;
+
+        // the frame info we last asked pipewire to renegotiate for, until it hands us a format
+        struct {
+            bool                                  pending = false;
+            uint32_t                              dmaW = 0, dmaH = 0, dmaFmt = 0, shmW = 0, shmH = 0, shmFmt = 0;
+            std::chrono::steady_clock::time_point requestedAt;
+        } renegotiation;
     };
 
     std::unique_ptr<SBuffer> createBuffer(SPWStream* pStream, bool dmabuf);
@@ -171,6 +178,7 @@ class CPipewireConnection {
     void                     removeSessionFrameCallbacks(CScreencopyPortal::SSession* pSession);
     uint32_t                 buildFormatsFor(spa_pod_builder* b[2], const spa_pod* params[2], SPWStream* stream);
     void                     updateStreamParam(SPWStream* pStream);
+    void                     requestRenegotiation(SPWStream* pStream);
 
   private:
     std::vector<std::unique_ptr<SPWStream>> m_vStreams;

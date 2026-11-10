@@ -18,6 +18,9 @@ constexpr static uint32_t FAILED_FRAMES_BEFORE_BACKOFF = 5;
 constexpr static double   FAILED_FRAME_BACKOFF_STEP_MS = 50.0;
 constexpr static double   FAILED_FRAME_BACKOFF_MAX_MS  = 1000.0;
 
+// if pipewire hasn't handed us a format this long after we asked to renegotiate, ask again
+constexpr static auto RENEGOTIATION_TIMEOUT = std::chrono::seconds(1);
+
 //
 static sdbus::Struct<std::string, uint32_t, sdbus::Variant> getFullRestoreStruct(const SSelectionData& data, uint32_t cursor) {
     std::unordered_map<std::string, sdbus::Variant> mapData;
@@ -501,7 +504,7 @@ void CScreencopyPortal::SSession::initCallbacks() {
                 Debug::log(LOG, "[sc] Incompatible formats, renegotiate stream");
                 const auto EXPIRED = std::move(sharingData.frameCallback);
                 sharingData.status = FRAME_NONE;
-                g_pPortalManager->m_sPortals.screencopy->m_pPipewire->updateStreamParam(PSTREAM);
+                g_pPortalManager->m_sPortals.screencopy->m_pPipewire->requestRenegotiation(PSTREAM);
                 if (!sharingData.frameCallback)
                     g_pPortalManager->m_sPortals.screencopy->queueNextShareFrame(this);
                 return;
@@ -623,7 +626,7 @@ void CScreencopyPortal::SSession::initCallbacks() {
                 Debug::log(LOG, "[sc] Incompatible formats, renegotiate stream");
                 const auto EXPIRED = std::move(sharingData.windowFrameCallback);
                 sharingData.status = FRAME_NONE;
-                g_pPortalManager->m_sPortals.screencopy->m_pPipewire->updateStreamParam(PSTREAM);
+                g_pPortalManager->m_sPortals.screencopy->m_pPipewire->requestRenegotiation(PSTREAM);
                 if (!sharingData.windowFrameCallback)
                     g_pPortalManager->m_sPortals.screencopy->queueNextShareFrame(this);
                 return;
@@ -821,6 +824,8 @@ static void pwStreamParamChanged(void* data, uint32_t id, const spa_pod* param) 
         Debug::log(TRACE, "[pw] invalid call in pwStreamParamChanged");
         return;
     }
+
+    PSTREAM->renegotiation.pending = false;
 
     spa_pod_dynamic_builder dynBuilder[3];
     const spa_pod*          params[4];
@@ -1443,4 +1448,30 @@ void CPipewireConnection::updateStreamParam(SPWStream* pStream) {
     pw_stream_update_params(pStream->stream, params, n_params);
     spa_pod_dynamic_builder_clean(&dynBuilder[0]);
     spa_pod_dynamic_builder_clean(&dynBuilder[1]);
+}
+
+void CPipewireConnection::requestRenegotiation(SPWStream* pStream) {
+    const auto& DMA   = pStream->pSession->sharingData.frameInfoDMA;
+    const auto& SHM   = pStream->pSession->sharingData.frameInfoSHM;
+    auto&       RENEG = pStream->renegotiation;
+
+    // Frames keep arriving while pipewire renegotiates. Asking again for the same thing on each of them
+    // restarts the negotiation over and over, so only ask again if the frame info changed or pipewire
+    // seems to have dropped the request.
+    const bool SAMETARGET = RENEG.dmaW == DMA.w && RENEG.dmaH == DMA.h && RENEG.dmaFmt == DMA.fmt && RENEG.shmW == SHM.w && RENEG.shmH == SHM.h && RENEG.shmFmt == SHM.fmt;
+    if (RENEG.pending && SAMETARGET && std::chrono::steady_clock::now() - RENEG.requestedAt < RENEGOTIATION_TIMEOUT) {
+        Debug::log(TRACE, "[pw] renegotiation for {}x{} already requested, waiting for pipewire", DMA.w, DMA.h);
+        return;
+    }
+
+    RENEG.pending     = true;
+    RENEG.dmaW        = DMA.w;
+    RENEG.dmaH        = DMA.h;
+    RENEG.dmaFmt      = DMA.fmt;
+    RENEG.shmW        = SHM.w;
+    RENEG.shmH        = SHM.h;
+    RENEG.shmFmt      = SHM.fmt;
+    RENEG.requestedAt = std::chrono::steady_clock::now();
+
+    updateStreamParam(pStream);
 }
