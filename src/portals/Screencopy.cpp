@@ -837,9 +837,11 @@ static void pwStreamParamChanged(void* data, uint32_t id, const spa_pod* param) 
 
     spa_format_video_raw_parse(param, &PSTREAM->pwVideoInfo);
     Debug::log(TRACE, "[pw] Framerate: {}/{}", PSTREAM->pwVideoInfo.max_framerate.num, PSTREAM->pwVideoInfo.max_framerate.denom);
-    PSTREAM->pSession->sharingData.framerate = PSTREAM->pwVideoInfo.max_framerate.num / PSTREAM->pwVideoInfo.max_framerate.denom;
+    if (PSTREAM->pwVideoInfo.max_framerate.num && PSTREAM->pwVideoInfo.max_framerate.denom)
+        PSTREAM->pSession->sharingData.framerate = std::max(1U, PSTREAM->pwVideoInfo.max_framerate.num / PSTREAM->pwVideoInfo.max_framerate.denom);
 
-    uint32_t                   data_type = 1 << SPA_DATA_MemFd;
+    uint32_t data_type = 1 << SPA_DATA_MemFd;
+    PSTREAM->isDMA     = false;
 
     const struct spa_pod_prop* prop_modifier;
     if ((prop_modifier = spa_pod_find_prop(param, nullptr, SPA_FORMAT_VIDEO_modifier))) {
