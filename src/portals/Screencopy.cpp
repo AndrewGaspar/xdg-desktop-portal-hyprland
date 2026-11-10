@@ -13,6 +13,11 @@
 constexpr static int MAX_RETRIES        = 10;
 constexpr static int MAX_DMABUF_RETRIES = 2;
 
+// after this many consecutive failed frames, slow down retries so a dead source doesn't keep the compositor busy
+constexpr static uint32_t FAILED_FRAMES_BEFORE_BACKOFF = 5;
+constexpr static double   FAILED_FRAME_BACKOFF_STEP_MS = 50.0;
+constexpr static double   FAILED_FRAME_BACKOFF_MAX_MS  = 1000.0;
+
 //
 static sdbus::Struct<std::string, uint32_t, sdbus::Variant> getFullRestoreStruct(const SSelectionData& data, uint32_t cursor) {
     std::unordered_map<std::string, sdbus::Variant> mapData;
@@ -390,6 +395,20 @@ void CScreencopyPortal::SSession::startCopy() {
     initCallbacks();
 }
 
+void CScreencopyPortal::SSession::onFrameFailed() {
+    // The compositor didn't fill the buffer we may have passed to copy, so keep it as the
+    // current buffer for the next attempt instead of handing a corrupt frame to pipewire.
+    // The caller destroys the spent frame callback.
+    sharingData.status = FRAME_FAILED;
+    sharingData.failedFrames++;
+
+    if (sharingData.failedFrames == FAILED_FRAMES_BEFORE_BACKOFF + 1)
+        Debug::log(LOG, "[sc] {} consecutive frames failed, backing off", sharingData.failedFrames);
+
+    if (g_pPortalManager->m_sPortals.screencopy->m_pPipewire->streamFromSession(this))
+        g_pPortalManager->m_sPortals.screencopy->queueNextShareFrame(this);
+}
+
 void CScreencopyPortal::SSession::initCallbacks() {
     if (sharingData.frameCallback) {
         sharingData.frameCallback->setBuffer([this, self = self](CCZwlrScreencopyFrameV1* r, uint32_t format, uint32_t width, uint32_t height, uint32_t stride) {
@@ -410,7 +429,8 @@ void CScreencopyPortal::SSession::initCallbacks() {
             if (!self)
                 return;
 
-            sharingData.status = FRAME_READY;
+            sharingData.status       = FRAME_READY;
+            sharingData.failedFrames = 0;
 
             sharingData.tvSec         = ((((uint64_t)tv_sec_hi) << 32) + (uint64_t)tv_sec_lo);
             sharingData.tvNsec        = tv_nsec;
@@ -429,7 +449,10 @@ void CScreencopyPortal::SSession::initCallbacks() {
             Debug::log(TRACE, "[sc] wlrOnFailed for {}", (void*)self.get());
             if (!self)
                 return;
-            sharingData.status = FRAME_FAILED;
+
+            onFrameFailed();
+
+            sharingData.frameCallback.reset();
         });
         sharingData.frameCallback->setDamage([this, self = self](CCZwlrScreencopyFrameV1* r, uint32_t x, uint32_t y, uint32_t width, uint32_t height) {
             Debug::log(TRACE, "[sc] wlrOnDamage for {}", (void*)self.get());
@@ -528,7 +551,8 @@ void CScreencopyPortal::SSession::initCallbacks() {
             if (!self)
                 return;
 
-            sharingData.status = FRAME_READY;
+            sharingData.status       = FRAME_READY;
+            sharingData.failedFrames = 0;
 
             sharingData.tvSec         = ((((uint64_t)tv_sec_hi) << 32) + (uint64_t)tv_sec_lo);
             sharingData.tvNsec        = tv_nsec;
@@ -547,7 +571,10 @@ void CScreencopyPortal::SSession::initCallbacks() {
             Debug::log(TRACE, "[sc] hlOnFailed for {}", (void*)self.get());
             if (!self)
                 return;
-            sharingData.status = FRAME_FAILED;
+
+            onFrameFailed();
+
+            sharingData.windowFrameCallback.reset();
         });
         sharingData.windowFrameCallback->setDamage([this, self = self](CCHyprlandToplevelExportFrameV1* r, uint32_t x, uint32_t y, uint32_t width, uint32_t height) {
             Debug::log(TRACE, "[sc] hlOnDamage for {}", (void*)self.get());
@@ -644,8 +671,12 @@ void CScreencopyPortal::queueNextShareFrame(CScreencopyPortal::SSession* pSessio
     Debug::log(TRACE, "[screencopy] set fps {}, frame took {:.2f}ms, ms till next refresh {:.2f}, estimated actual fps: {:.2f}", pSession->sharingData.framerate, FRAMETOOKMS,
                MSTILNEXTREFRESH, std::clamp(1000.0 / FRAMETOOKMS, 1.0, (double)pSession->sharingData.framerate));
 
-    g_pPortalManager->addTimer(
-        {std::clamp(MSTILNEXTREFRESH - 1.0 /* safezone */, 6.0, 1000.0), [pSession]() { g_pPortalManager->m_sPortals.screencopy->startFrameCopy(pSession); }});
+    auto delayMs = std::clamp(MSTILNEXTREFRESH - 1.0 /* safezone */, 6.0, 1000.0);
+
+    if (pSession->sharingData.failedFrames > FAILED_FRAMES_BEFORE_BACKOFF)
+        delayMs = std::max(delayMs, std::min(FAILED_FRAME_BACKOFF_STEP_MS * (pSession->sharingData.failedFrames - FAILED_FRAMES_BEFORE_BACKOFF), FAILED_FRAME_BACKOFF_MAX_MS));
+
+    g_pPortalManager->addTimer({delayMs, [pSession]() { g_pPortalManager->m_sPortals.screencopy->startFrameCopy(pSession); }});
 }
 bool CScreencopyPortal::hasToplevelCapabilities() {
     return !!m_sState.toplevel;
