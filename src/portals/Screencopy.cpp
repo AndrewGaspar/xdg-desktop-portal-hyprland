@@ -1314,6 +1314,11 @@ void CPipewireConnection::enqueue(CScreencopyPortal::SSession* pSession) {
 
     Debug::log(TRACE, "[pw] --------------------------------- End enqueue");
 
+    // a frame went through, so dma-buf works on this stream: the fixation retries only guard
+    // against negotiations that never produce one, not against later renegotiations.
+    if (!CORRUPT && PSTREAM->isDMA)
+        PSTREAM->dmaBufRetries = 0;
+
     pw_stream_queue_buffer(PSTREAM->stream, PSTREAM->currentPWBuffer->pwBuffer);
 
     PSTREAM->currentPWBuffer = nullptr;
