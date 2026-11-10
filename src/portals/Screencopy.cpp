@@ -847,7 +847,16 @@ static void pwStreamParamChanged(void* data, uint32_t id, const spa_pod* param) 
         PSTREAM->isDMA = true;
         data_type      = 1 << SPA_DATA_DmaBuf;
 
-        RASSERT(PSTREAM->pwVideoInfo.format == pwFromDrmFourcc(PSTREAM->pSession->sharingData.frameInfoDMA.fmt), "invalid format in dma pw param change");
+        if (PSTREAM->pwVideoInfo.format != pwFromDrmFourcc(PSTREAM->pSession->sharingData.frameInfoDMA.fmt)) {
+            // The source changed its format while this negotiation was in flight. Offer the current one instead.
+            Debug::log(WARN, "[pw] negotiated dma format {} doesn't match the source's {}, renegotiating", (int)PSTREAM->pwVideoInfo.format,
+                       (int)pwFromDrmFourcc(PSTREAM->pSession->sharingData.frameInfoDMA.fmt));
+            g_pPortalManager->m_sPortals.screencopy->m_pPipewire->requestRenegotiation(PSTREAM);
+            spa_pod_dynamic_builder_clean(&dynBuilder[0]);
+            spa_pod_dynamic_builder_clean(&dynBuilder[1]);
+            spa_pod_dynamic_builder_clean(&dynBuilder[2]);
+            return;
+        }
 
         if ((prop_modifier->flags & SPA_POD_PROP_FLAG_DONT_FIXATE) > 0) {
             Debug::log(TRACE, "[pw] don't fixate");
