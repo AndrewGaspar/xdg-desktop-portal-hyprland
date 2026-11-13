@@ -261,6 +261,13 @@ void CPortalManager::onGlobal(uint32_t name, const char* interface, uint32_t ver
 }
 
 void CPortalManager::onGlobalRemoved(uint32_t name) {
+    for (const auto& o : m_vOutputs) {
+        if (o->id != name || !m_sPortals.screencopy)
+            continue;
+
+        m_sPortals.screencopy->onOutputRemoved(o->name);
+    }
+
     std::erase_if(m_vOutputs, [&](const auto& other) { return other->id == name; });
 }
 

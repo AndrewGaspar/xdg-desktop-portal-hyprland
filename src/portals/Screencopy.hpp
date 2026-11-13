@@ -123,6 +123,9 @@ class CScreencopyPortal {
     uint32_t                                                          closeAllSessions();
     std::vector<sdbus::Struct<std::string, std::string, std::string>> listSessions();
 
+    // ends the sessions sharing this output (or a region of it)
+    void onOutputRemoved(const std::string& output);
+
   private:
     std::unique_ptr<sdbus::IObject>                          m_pObject;
 

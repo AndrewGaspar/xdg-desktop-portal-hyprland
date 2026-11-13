@@ -61,12 +61,12 @@ dbUasv CScreencopyPortal::onCreateSession(sdbus::ObjectPath requestHandle, sdbus
     // create objects
     PSESSION->session            = createDBusSession(sessionHandle);
     PSESSION->session->onDestroy = [PSESSION, this]() {
+        // stop any capture still in flight before its buffers go away with the stream
+        m_pPipewire->removeSessionFrameCallbacks(PSESSION.get());
         if (PSESSION->sharingData.active) {
             m_pPipewire->destroyStream(PSESSION.get());
             Debug::log(LOG, "[screencopy] Stream destroyed");
         }
-        // drop any capture still in flight so the compositor stops copying for a dead session
-        m_pPipewire->removeSessionFrameCallbacks(PSESSION.get());
         PSESSION->session.release();
         Debug::log(LOG, "[screencopy] Session destroyed");
 
@@ -715,6 +715,16 @@ uint32_t CScreencopyPortal::closeAllSessions() {
     Debug::log(LOG, "[screencopy] CloseAll: closed {} session(s)", closed);
 
     return closed;
+}
+
+void CScreencopyPortal::onOutputRemoved(const std::string& output) {
+    for (auto& s : m_vSessions) {
+        if (!s->session || (s->selection.type != TYPE_OUTPUT && s->selection.type != TYPE_GEOMETRY) || s->selection.output != output)
+            continue;
+
+        if (closeDBusSession(s->session.get()))
+            Debug::log(LOG, "[screencopy] Shared output {} is gone, ended session {}", output, s->sessionHandle.c_str());
+    }
 }
 
 static std::string selectionTypeName(eSelectionType type) {
