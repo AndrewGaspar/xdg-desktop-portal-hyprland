@@ -13,6 +13,7 @@ package installs), plus:
 | renegotiate instead of aborting | the DMA format `RASSERT` used to kill the portal when the format changed mid-negotiation |
 | dma-buf retry reset | the 2nd renegotiation (resize/switch) of a stream used to fall back to SHM permanently |
 | `pwStreamParamChanged` hardening (backport from #441) | div-by-zero on a format without a framerate; stale `isDMA` after a DMA→SHM fallback |
+| `ScreencastControl1` + `Session.Closed` | `CloseAll()` ends every screencast from outside (bar button, keybind) and the app is told; the portal also ends a share itself, with `Closed`, when the shared output goes away or pipewire drops the stream (it used to freeze) |
 
 ## Build
 
@@ -110,3 +111,26 @@ grep -E 'falling back to SHM|backing off|renegotiating|Assert' /tmp/xdph-share-s
 Known limitation (compositor side, not fixed here): if the shared window is **closed**,
 Hyprland 0.56.2 ignores the capture request without sending `failed`. The share then shows the last
 frame until the app stops it. Same as stock.
+
+## Ending every share: `ScreencastControl1`
+
+On the portal's own bus name and object path:
+
+```sh
+busctl --user call org.freedesktop.impl.portal.desktop.hyprland /org/freedesktop/portal/desktop \
+    io.github.andrewgaspar.hypxr.ScreencastControl1 CloseAll    # -> u <sessions ended>
+busctl --user call org.freedesktop.impl.portal.desktop.hyprland /org/freedesktop/portal/desktop \
+    io.github.andrewgaspar.hypxr.ScreencastControl1 List        # -> a(sss) handle, app id, type
+```
+
+`CloseAll` emits `org.freedesktop.impl.portal.Session::Closed` for each ScreenCast session, which
+xdg-desktop-portal relays to the app as `org.freedesktop.portal.Session::Closed`, then tears the
+session down like a normal `Close`. `List` types are `monitor`, `window`, `region`, `workspace`, or
+`none` (no source selected yet). Screenshot and GlobalShortcuts sessions aren't touched.
+
+End-to-end test, in a throwaway podman container (headless labwc, nested Hyprland, private bus,
+pipewire, the frontend and a stream reader; nothing from the live session):
+
+```sh
+tests/close-all/run-in-container.sh     # needs build/xdg-desktop-portal-hyprland; logs in build/close-all-logs
+```
