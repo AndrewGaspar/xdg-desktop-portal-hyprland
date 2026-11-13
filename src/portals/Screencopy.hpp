@@ -119,6 +119,10 @@ class CScreencopyPortal {
 
     std::unique_ptr<CPipewireConnection> m_pPipewire;
 
+    // io.github.andrewgaspar.hypxr.ScreencastControl1: end every screencast from outside (a bar button, a keybind)
+    uint32_t                                                          closeAllSessions();
+    std::vector<sdbus::Struct<std::string, std::string, std::string>> listSessions();
+
   private:
     std::unique_ptr<sdbus::IObject>                          m_pObject;
 
@@ -132,8 +136,9 @@ class CScreencopyPortal {
         SP<CCHyprlandToplevelExportManagerV1> toplevel   = nullptr;
     } m_sState;
 
-    const sdbus::InterfaceName INTERFACE_NAME = sdbus::InterfaceName{"org.freedesktop.impl.portal.ScreenCast"};
-    const sdbus::ObjectPath    OBJECT_PATH    = sdbus::ObjectPath{"/org/freedesktop/portal/desktop"};
+    const sdbus::InterfaceName INTERFACE_NAME         = sdbus::InterfaceName{"org.freedesktop.impl.portal.ScreenCast"};
+    const sdbus::InterfaceName CONTROL_INTERFACE_NAME = sdbus::InterfaceName{"io.github.andrewgaspar.hypxr.ScreencastControl1"};
+    const sdbus::ObjectPath    OBJECT_PATH            = sdbus::ObjectPath{"/org/freedesktop/portal/desktop"};
 
     friend struct SSession;
 };

@@ -456,13 +456,16 @@ void CPortalManager::startEventLoop() {
             }
         }
 
+        // collect first: a callback may add timers, which would invalidate an iterator over the list
         std::vector<CTimer*> toRemove;
         for (auto& t : m_sTimersThread.timers) {
-            if (t->passed()) {
-                t->m_fnCallback();
+            if (t->passed())
                 toRemove.emplace_back(t.get());
-                Debug::log(TRACE, "[core] calling timer {}", (void*)t.get());
-            }
+        }
+
+        for (const auto& t : toRemove) {
+            Debug::log(TRACE, "[core] calling timer {}", (void*)t);
+            t->m_fnCallback();
         }
 
         int ret = 0;

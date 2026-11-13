@@ -65,6 +65,8 @@ dbUasv CScreencopyPortal::onCreateSession(sdbus::ObjectPath requestHandle, sdbus
             m_pPipewire->destroyStream(PSESSION.get());
             Debug::log(LOG, "[screencopy] Stream destroyed");
         }
+        // drop any capture still in flight so the compositor stops copying for a dead session
+        m_pPipewire->removeSessionFrameCallbacks(PSESSION.get());
         PSESSION->session.release();
         Debug::log(LOG, "[screencopy] Session destroyed");
 
@@ -364,6 +366,9 @@ void CScreencopyPortal::SSession::startCopy() {
 
     if (!POUTPUT && (selection.type == TYPE_GEOMETRY || selection.type == TYPE_OUTPUT)) {
         Debug::log(ERR, "[screencopy] Output {} not found??", selection.output);
+        // nothing will queue another frame, so the share would freeze for good. End it and tell the app.
+        if (session && closeDBusSession(session.get()))
+            Debug::log(LOG, "[screencopy] Shared output {} is gone, ended session {}", selection.output, sessionHandle.c_str());
         return;
     }
 
@@ -687,11 +692,52 @@ bool CScreencopyPortal::hasToplevelCapabilities() {
 
 CScreencopyPortal::SSession* CScreencopyPortal::getSession(sdbus::ObjectPath& path) {
     for (auto& s : m_vSessions) {
-        if (s->sessionHandle == path)
-            return s.get();
+        // a closed session can still get a SelectSources / Start that was already on the bus
+        if (s->sessionHandle != path || !s->session || s->session->closed)
+            continue;
+
+        return s.get();
     }
 
     return nullptr;
+}
+
+uint32_t CScreencopyPortal::closeAllSessions() {
+    uint32_t closed = 0;
+
+    for (auto& s : m_vSessions) {
+        if (!s->session || !closeDBusSession(s->session.get()))
+            continue;
+
+        closed++;
+    }
+
+    Debug::log(LOG, "[screencopy] CloseAll: closed {} session(s)", closed);
+
+    return closed;
+}
+
+static std::string selectionTypeName(eSelectionType type) {
+    switch (type) {
+        case TYPE_OUTPUT: return "monitor";
+        case TYPE_WINDOW: return "window";
+        case TYPE_GEOMETRY: return "region";
+        case TYPE_WORKSPACE: return "workspace";
+        default: return "none";
+    }
+}
+
+std::vector<sdbus::Struct<std::string, std::string, std::string>> CScreencopyPortal::listSessions() {
+    std::vector<sdbus::Struct<std::string, std::string, std::string>> sessions;
+
+    for (auto& s : m_vSessions) {
+        if (!s->session || s->session->closed)
+            continue;
+
+        sessions.emplace_back(s->sessionHandle, s->appid, selectionTypeName(s->selection.type));
+    }
+
+    return sessions;
 }
 
 CScreencopyPortal::CScreencopyPortal(SP<CCZwlrScreencopyManagerV1> mgr) {
@@ -712,6 +758,11 @@ CScreencopyPortal::CScreencopyPortal(SP<CCZwlrScreencopyManagerV1> mgr) {
                     sdbus::registerProperty("AvailableCursorModes").withGetter([]() { return uint32_t{HIDDEN | EMBEDDED}; }),
                     sdbus::registerProperty("version").withGetter([]() { return uint32_t{6}; }))
         .forInterface(INTERFACE_NAME);
+
+    m_pObject
+        ->addVTable(sdbus::registerMethod("CloseAll").withOutputParamNames("closed").implementedAs([this]() { return closeAllSessions(); }),
+                    sdbus::registerMethod("List").withOutputParamNames("sessions").implementedAs([this]() { return listSessions(); }))
+        .forInterface(CONTROL_INTERFACE_NAME);
 
     m_sState.screencopy = mgr;
     m_pPipewire         = std::make_unique<CPipewireConnection>();
@@ -810,8 +861,15 @@ static void pwStreamStateChange(void* data, pw_stream_state old, pw_stream_state
     }
 
     if (state == PW_STREAM_STATE_UNCONNECTED) {
-        g_pPortalManager->m_sPortals.screencopy->m_pPipewire->removeSessionFrameCallbacks(PSTREAM->pSession);
-        g_pPortalManager->m_sPortals.screencopy->m_pPipewire->destroyStream(PSTREAM->pSession);
+        const auto PSESSION = PSTREAM->pSession;
+        // destroyStream() marks the session inactive before disconnecting, so an active session here means pipewire dropped the stream on us
+        const bool UNEXPECTED = PSESSION->sharingData.active;
+
+        g_pPortalManager->m_sPortals.screencopy->m_pPipewire->removeSessionFrameCallbacks(PSESSION);
+        g_pPortalManager->m_sPortals.screencopy->m_pPipewire->destroyStream(PSESSION); // frees PSTREAM
+
+        if (UNEXPECTED && PSESSION->session && closeDBusSession(PSESSION->session.get()))
+            Debug::log(LOG, "[screencopy] Stream disconnected, ended session {}", PSESSION->sessionHandle.c_str());
     }
 }
 
